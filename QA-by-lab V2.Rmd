@@ -1,0 +1,468 @@
+---
+title: "Lab QA Report"
+author: "Water Monitoring and Assessment"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+<!--
+This markdown file performs a mass of QA operations and then generates a technical report.
+The report will only have flagged ids show up.
+--> 
+```{r setup, echo=FALSE}
+library('knitr')
+library('DT')
+#display labID
+paste('Lab Accession Sequence Number:', lab_sequence)
+```
+
+# Introduction
+The goal of this technical report is to run several scripts on a specific lab accession sequence number. The purpose of these scripts is to automate quality assurance tests to assist CT-DEP staff in dertermining if the information is consistent with the data quality objectives of their projects.
+
+The folllowing tests will be run in this report:
+
+* Count N/A values
+* Flag Values compared to Milli-Q
+* Flag duplicate values compared to lab precision rate
+* Values entered as less than the minimum detection limit and not N/A
+* 'Total' values against the sum of their component chemicals
+* Values that are above the 95th percentile by basin
+* Values that are above the 95th percentile by impervious cover grouping
+
+## Languages and Software Used
+The languages used were SQLite and R. The main software and IDEs used were SQLiteStudio, RStudio, QGIS, and ArcGIS. The R libraries used, in order of frequency, are RSQLite, ggplot2, and plyr.
+
+## Notes & Data Manipulation
+An important note is that many of the following scripts convert null values to the chemical parameter's defined minimum detection limit value. Another important note is that most of the scripts rely on SQL queries that stress taking only 'River/Stream' station types and no marked duplicate records. All lab accession number IDs are also shortened to the first six digits. Finally, all generated tables are in CSV (Comma-Separated Values) format.
+
+
+<!-- Lab Accession Sequence(s)
+This code block is where the user defines the desired lab accession ID(s) for this technical report.
+
+The block will convert all tables to hold records of only the desired ID(s). -->
+```{r takeDesiredLabAccessions, include=FALSE}
+#set all appropiate data tables to just the chosen lab accessions  
+
+table_chem <-  table_chem_base[table_chem_base$lab_accession %in% labIDs[z], ]
+table_milliQ <-  table_milliQ_base[table_milliQ_base$lab_accession %in% labIDs[z], ]
+table_sumOfParts <-  table_sumOfParts_base[table_sumOfParts_base$lab_accession %in% labIDs[z], ]
+table_pairs <-  table_pairs_base[table_pairs_base$lab_accession %in% labIDs[z], ]
+lessThanMDL <-  lessThanMDL_base[lessThanMDL_base$lab_accession %in% labIDs[z], ]
+
+#set sitesbasins to table_chem's station sequences
+sitebasin <- sitebasin_base[which(sitebasin_base$sta_seq == table_chem$sta_seq), ]
+
+#set v_chems
+#take only chemical parameters within this lab ID
+v_chems <- c(unique(table_chem$chemparameter))
+```
+
+
+# QA Table
+This is a table of current values in the QA table within the database. The chemical parameters listed here are the only ones tested in sections 3.2 and 3.3.
+
+```{r QA-Table, echo=FALSE}
+#take only chemical parameters in table_milliQ
+milli_chem <- c(unique(table_milliQ$chemparameter))
+#check for chemical parameters in table_milliQ compared to table_QA
+#if there is no corresponding parameter in table_QA, toss
+milli_chem <- intersect(milli_chem, unique(table_QA$chemparameter))
+
+#display
+datatable(table_QA, rownames = FALSE, options = list)
+```
+
+# Information
+
+## Count N/A Values
+The following is a table that contains the count of null values by chemical parameter.
+
+```{r countNull, include=FALSE}
+#Join in R syntax to create a table with sites and chemicals
+table_basin<-merge(table_chem, sitebasin,by="sta_seq")
+#declare and wipe data frame null clean for resuse
+df_null <- NULL
+#loop until end of amound of chemical parameters
+for (n in 1:length(v_chems)) {
+  chem = v_chems[n]
+  ##Parse out some data by row
+  #df of all values
+  n_total <-table_basin[table_basin$chemparameter==chem & table_basin$duplicate==0, ]
+  #df of null values
+  n_NA <-table_basin[table_basin$chemparameter==chem & table_basin$duplicate==0 & table_basin$value =='NA', ]
+  
+  #create list of values omiting NA
+  l_isNumeric <- na.omit(n_total$value)
+  l_isNumeric <- sapply(l_isNumeric, '[', seq(max(sapply(l_isNumeric, length))))
+  
+  df_nullTempRow <- data.frame(chemical = chem,
+                               total = c(nrow(n_total)),
+                               countNumeric = c(length(l_isNumeric)),
+                               countNA = c(nrow(n_NA)))
+  
+  df_null <- rbind(df_null, df_nullTempRow)
+}
+```
+```{r tables-df_null, fig.cap='Table 1. Count of N/A values by chemical', fig.align="center", echo=FALSE}
+datatable(df_null, rownames = FALSE, options = list)
+```
+
+
+## Flagged Milli-Q Values
+The following is a table of flagged Milli-Q values where the percent difference between it and the minimum detection limit was the lab precision rate.
+
+```{r flaggedMilli, include=FALSE}
+df_total <- NULL #reset df_total at runtime
+
+#loop until end of amound of chemical parameters
+for (n in 1:length(milli_chem)) {
+  #Set chosen chemical
+  chemChoice <- milli_chem[n]
+  #create chem dataframe of specific chemical parameter
+  chem <- table_milliQ[which(table_milliQ$chemparameter == chemChoice), ]
+  
+  if (nrow(chem) > 0) { #check that chem has records
+    #get lab duplicate precision rate for chemparameter
+    RPD <- table_QA$lab_duplicate_precision[table_QA$chemparameter == chemChoice]
+    
+    #convert null milliQ values to mdl
+    mdl <- chem$MDL[1]
+    chem$Milli_Q[is.na(chem$Milli_Q)] <- mdl
+    
+    #add columns/fields to mark if pair failed RPD test
+    chem <- cbind(chem, 'lab_precision_rate' = c(RPD))
+    chem <- cbind(chem, "Percent_Diff" = c(0.0))
+    
+    #percent difference
+    chem$Percent_Diff <- c(
+      abs(chem$Milli_Q - chem$MDL) /
+        ((chem$Milli_Q + chem$MDL) / 2)
+    )
+    
+    #TRUE if Percent_Diff is greater than RPD (15%)
+    #keep only records where Percent_Diff is higher
+    chem <- chem[(chem$Percent_Diff > chem$lab_precision_rate), ]
+    
+    #add chem df to total dataframe
+    df_total <- rbind(df_total, chem)
+  }
+  
+}
+
+#-----END-LOOP------#
+if (!is.null(nrow(df_total)) == TRUE && nrow(df_total) > 0) {
+  #need to convert $collect_date to date format
+  df_total$collect_date <- as.Date(df_total$collect_date, "%m/%d/%Y")
+  # sort
+  df_total <- df_total[with(df_total, order(chemparameter, collect_date, sta_seq)), ]
+  #convert to percent format for viewing
+  df_total$Percent_Diff <- signif(df_total$Percent_Diff, digits = 4) #round
+  df_total$lab_precision_rate <- signif(df_total$lab_precision_rate, digits = 4)
+  df_total$Percent_Diff <- paste(df_total$Percent_Diff * 100, "%")
+  df_total$lab_precision_rate <- paste(df_total$lab_precision_rate * 100, "%")
+}
+```
+```{r tables-df_milliQ, fig.cap='Table 2. Count of flagged Milli-Q values', fig.align="center", echo=FALSE}
+datatable(df_total, rownames = FALSE, options = list(pageLength = 5))
+```
+
+
+## Flagged Duplicate Values
+The following is a table of flagged duplicate values where the differences between them was above the field precision rate.
+
+```{r flaggedDup, include=FALSE}
+df_total <- NULL #reset df_total at runtime
+
+#loop until end of amound of chemical parameters
+for (n in 1:length(milli_chem)) {
+  #Set chosen chemical
+  chemChoice <- milli_chem[n]
+  #create chem dataframe of specific chemical parameter
+  chem <- table_pairs[which(table_pairs$chemparameter == chemChoice), ]
+  
+  if (nrow(chem) > 0) { #check if chem has any values
+    #Create MDL table
+    test_table_mdl <- table_mdl[table_mdl$chemparameter == chemChoice & table_mdl$MDL, ]
+    mdl <- test_table_mdl[1, 2] # convert value to MDL numeric vector
+      
+    #get FIELD duplicate precision rate for chemparameter
+    RPD <- table_QA$field_duplicate_precision[table_QA$chemparameter == chemChoice]
+    
+    #convert all NULL or N/A values to chemical's MDL (minimum detection limit)
+    chem$value_field[is.na(chem$value_field)] <- mdl
+    chem$value_duplicate[is.na(chem$value_duplicate)] <- mdl
+    
+    #add columns
+    chem <- cbind(chem, 'field_precision_rate' = c(RPD))
+    chem <- cbind(chem, "Percent_Diff" = c(0.0))
+    
+    #percent difference
+    chem$Percent_Diff <- c(
+      abs(chem$value_field - chem$value_duplicate) /
+        ((chem$value_field + chem$value_duplicate) / 2))
+    
+    #keep records where percent difference above field precision rate
+    chem <- chem[(chem$Percent_Diff > chem$field_precision_rate), ]
+    
+    #add chem df to total dataframe
+    df_total <- rbind(df_total, chem)
+  }
+  
+}
+#-----END-LOOP------#
+if (!is.null(nrow(df_total)) == TRUE && nrow(df_total) > 0) {
+  #need to convert $collect_date to date format
+  df_total$collect_date <- as.Date(df_total$collect_date, "%m/%d/%Y")
+  # sort
+  df_total <- df_total[with(df_total, order(chemparameter, collect_date, sta_seq)), ]
+  #convert to percent format for viewing
+  df_total$Percent_Diff <- signif(df_total$Percent_Diff, digits = 4) #round
+  df_total$field_precision_rate <- signif(df_total$field_precision_rate, digits = 4)
+  df_total$Percent_Diff <- paste(df_total$Percent_Diff * 100, "%")
+  df_total$field_precision_rate <- paste(df_total$field_precision_rate * 100, "%")
+}
+```
+```{r tables-df_duplicate, fig.cap='Table 3. Count of flagged duplicate values', fig.align="center", echo=FALSE}
+datatable(df_total, rownames = FALSE, options = list(pageLength = 5))
+```
+
+
+## Values Less Than MDL and Not NULL
+The following is a table of values less than the minimum detection limit and are not NULL.
+
+```{r lessThanMDL, include=FALSE}
+#copy only rows where value is less than MDL
+lessThanMDL_final <- lessThanMDL[lessThanMDL$value < lessThanMDL$MDL, ]
+#delete null rows
+lessThanMDL_final <- lessThanMDL[rowSums(is.na(lessThanMDL)) == 0, ]
+```
+```{r tables-lessThanMDL, fig.cap='Table 4. Table of values less than mdl', fig.align="center", echo=FALSE}
+datatable(lessThanMDL_final, rownames = FALSE, options = list(pageLength = 5))
+```
+
+
+## Total vs Sum of Parts
+The following is a table of values where the total value is compared to the sum of its parts, such as total nitrogen compared to nitrite + nitrate + ammonia. A value is considered flagged and put into this table if the sum is more than the value marked as a total.
+
+```{r sumOfParts, include=FALSE}
+#create temporary sum table
+sumOfParts <- table_sumOfParts
+
+#create chem dataframe of specific chemical parameters
+sumOfParts <- sumOfParts[sumOfParts$chemparameter == 'Ammonia' |
+                sumOfParts$chemparameter == 'Nitrate' |
+                sumOfParts$chemparameter == 'Nitrite' |
+                sumOfParts$chemparameter == 'Ortho Phosphate' |
+                sumOfParts$chemparameter == 'Total Nitrogen' |
+                sumOfParts$chemparameter == 'Total Phosphorus', ]
+
+#create array of distinct lab_accession values
+sum_labs <- c(unique(sumOfParts$lab_accession))
+
+#reset df_total
+df_total = NULL
+
+#loop through unique labIDs
+for (n in 1:length(sum_labs)) {
+  
+  #declare temp chem from table values only from specific lab
+  chem <- sumOfParts[sumOfParts$lab_accession == sum_labs[n], ]
+  
+  #convert null values to 0
+  chem$value[is.na(chem$value)] <- 0
+  
+  #aggregate sum by chemparameter
+  chem_agg <- aggregate(chem$value, by=list(Category=chem$chemparameter), FUN=sum)
+  
+  #assign values
+  ammonia <- chem_agg[1, 2]
+  nitrate <- chem_agg[2, 2]
+  nitrite <- chem_agg[3, 2]
+  ortho   <- chem_agg[4, 2]
+  tNitro  <- chem_agg[5, 2]
+  tPhos   <- chem_agg[6, 2]
+  
+  sumDissolved <- ammonia + nitrate + nitrite
+  
+  df_table = data.frame(
+    'LabID' = sumOfParts$lab_accession[n],
+    ammonia,
+    nitrate,
+    nitrite,
+    'Sum of Dissolved' = sumDissolved,
+    tNitro,
+    'Ortho Phosphate' = ortho,
+    'Total Phosphorus' = tPhos)
+  
+  #only keep records where sum of dissolved is more than total nitrogen
+  tempNitro <- df_table[df_table$Sum.of.Dissolved > df_table$tNitro, ]
+  #only keep records where sum of ortho phosphate is more than total phosphorus
+  tempPhos <- df_table[df_table$Ortho.Phosphate > df_table$tPhos, ]
+  
+  #add to total dataframe
+  df_total <- rbind(df_total, tempNitro)
+  df_total <- rbind(df_total, tempPhos)
+  #wipe duplicates
+  df_total <- unique(df_total)
+}
+```
+```{r tables-df_sumOfParts, fig.cap='Table 5. Table of total vs sum of parts', fig.align="center", echo=FALSE}
+datatable(df_total, rownames = FALSE, options = list(pageLength = 5))
+```
+
+
+## Values Above 95th Percentile by Basin
+The following is a table of chemical parameter values above the 95th percentile, by major basin.
+
+```{r above95percentile, include=FALSE}
+#Join in R syntax to create a table with sites and chemicals
+table_basin <- merge(table_chem, sitebasin, by="sta_seq")
+
+#declare complete df
+allChem <- NULL
+
+#create table of mbasn to major
+basin <- unique(table_basin[, c('mbasn', 'major')])
+#sort by mbasn
+basin <- basin[order(basin$mbasn), ]
+#convert to vector
+basin_list <- c(basin$major)
+
+for (i in 1:length(v_chems)) {
+  #decide chemChoice
+  chemChoice <- v_chems[i]
+  
+  #create temp data frame of chosen parameter
+  df_chem <- table_basin[which(table_basin$chemparameter == chemChoice), ]
+  df_total <- NULL #reset df_total at runtime
+  
+  #set mdl for chemparameter
+  #inner_table_mdl <- table_mdl[table_mdl$chemparameter == chemChoice & table_mdl$MDL, ]
+  ##update null values to mdl
+  #df_chem$value[is.na(df_chem$value)] <- inner_table_mdl$MDL
+  
+  #loop through and organize by basins
+  for (n in 1:length(basin_list)) {
+    #create temp dataframe of current basin
+    df_basin <- df_chem[df_chem$major == basin_list[n], ]
+    
+    if (nrow(df_basin) > 0) { #check if df_basin has any values
+      #cbind basin name to table
+      df_basin <- cbind(df_basin, basin_list[n])
+      
+      #find 95th percentile
+      Q95 <- quantile(df_basin$value, .95, na.rm = TRUE)
+      #cbind 95th percentile to the table
+      df_basin <- cbind(df_basin, Q95)
+      
+      #keep only records where values above 95th percentile
+      df_basin <- df_basin[df_basin$value > Q95, ]
+      
+      #add to to total dataframe
+      df_total <- rbind(df_total, df_basin)
+    }
+  }
+  #combine total of chem to all_chem table
+  allChem <- rbind(allChem, df_total)
+}
+
+if (!is.null(nrow(allChem)) == TRUE && nrow(allChem) > 0) {
+  #shorten allChem to specific fields
+  test = allChem[, c('lab_accession',
+                      'sta_seq',
+                      'chemparameter',
+                      'collect_date',
+                      'name' = c(allChem$name.x),
+                      'value',
+                      'Q95',
+                      'uom',
+                      'major')]
+  #omit null rows
+  allChem <- na.omit(test)
+}
+```
+```{r tables-above95th, fig.cap='Table 6. Table of values above 95th percentiles', fig.align="center", echo=FALSE}
+datatable(allChem, rownames = FALSE, options = list(pageLength = 10))
+```
+
+## Values Above 95th Percentile by IC Group
+The following is a table of chemical parameter values above the 95th percentile, by custom impervious cover (IC) metrics.
+
+An important note is that this code portion relies on sites_Joined.csv.
+The sites_Joined.csv table is generated from a join between Sites_HydroID and HSI_StreamCatch inside QGIS.
+
+```{r above95percentileIC, include=FALSE}
+#join t_chem and t_sitesGrouped by sta_seq
+total <- merge(table_chem, t_sitesGrouped, by='sta_seq')
+
+#declare complete df
+allChem <- NULL
+
+#create table of custom IC Metric
+customIC <- data.frame(
+  'low' = c(0, 2, 10),
+  'high' = c(2, 10, Inf)
+)
+
+
+for (i in 1:length(v_chems)) {
+  #decide chemChoice
+  chemChoice <- v_chems[i]
+  
+  #create temp data frame of chosen parameter
+  df_chem <- total[total$chemparameter == chemChoice, ]
+  df_total <- NULL #reset df_total at runtime
+  
+  ##update null values to mdl
+  #df_chem$value[is.na(df_chem$value)] <- df_chem$MDL
+  
+  #loop through ICMetric of 1 to 3, essentially grouping
+  for (n in 1:3) {
+    #create temp dataframe by custom ICMetric values
+    df_IC <- df_chem[df_chem$IC_Avg > customIC$low[n] &
+                       df_chem$IC_Avg < customIC$high[n], ]
+    
+    #check if there any rows in df_IC
+    if (nrow(df_IC) > 0) {
+      #!! IMPORTANT !!
+      #change ICMetric to new categorization
+      df_IC$ICMetric = n
+      
+      #find 95th percentile
+      Q95 <- quantile(df_IC$value, .95, na.rm = TRUE)
+      #add percentile as column
+      df_IC <- cbind(df_IC, Q95)
+      
+      #keep only records where values above 95th percentile
+      df_IC <- df_IC[df_IC$value > Q95, ]
+      
+      #add to to total dataframe
+      df_total <- rbind(df_total, df_IC)
+    }
+  }
+  #combine total of chem to all_chem table
+  allChem <- rbind(allChem, df_total)
+}
+
+if (!is.null(nrow(allChem)) == TRUE && nrow(allChem) > 0) {
+  #shorten allChem to specific fields
+  test = allChem[, c('lab_accession',
+                      'sta_seq',
+                      'chemparameter',
+                      'collect_date',
+                      'name' = c(allChem$name.x),
+                      'value',
+                      'Q95',
+                      'uom',
+                     'ICMetric')]
+  #omit null rows
+  allChem <- na.omit(test)
+}
+```
+```{r tables-above95thIC, fig.cap='Table 7. Table of values above 95th percentiles by IC group', fig.align="center", echo=FALSE}
+datatable(allChem, rownames = FALSE, options = list(pageLength = 10))
+```
