@@ -7,7 +7,7 @@ library('DT')
 
 # enter list of lab accession numbers
 #labIDs <- c(unique(table_chem$lab_accession)) #all lab accession sequences
-labIDs <- c('120156', '120279', '150413', '150459')
+labIDs <- c('120156', '120274', '150413', '150459')
 
 
 # perform all SQL queries
@@ -15,13 +15,14 @@ labIDs <- c('120156', '120279', '150413', '150459')
 db_path <- 'S:/J_Tonfa/5YrMonitoringRpt/' 
 db <- dbConnect(SQLite(), dbname=paste(db_path,"monrpt.db",sep=''));
 
-##take main table
+##take main table of chemical values along with mdl
+# TAKE ONLY NON-DUPLICATE, RIVER/STREAM RECORDS
 SQL<- "SELECT *
 FROM 
-chemdata
+  chemdata
 WHERE
-station_type='River/Stream',
-and duplicate == 0;"
+  station_type='River/Stream'
+  and duplicate == 0;"
 
 table_chem_base <-dbGetQuery(conn=db,SQL)
 #take only first six digits of lab_accession
@@ -66,29 +67,6 @@ table_milliQ_base <- dbGetQuery(conn=db, SQL)
 #take only first six digits of lab_accession
 table_milliQ_base$lab_accession <- substr(table_milliQ_base$lab_accession, 1, 6)
 
-#query
-SQL<- "select
-  chemdata.lab_accession,
-  chemdata.sta_seq,
-  chemdata.chemparameter,
-  chemdata.collect_date,
-  sites.name,
-  chemdata.value,
-  mdl.MDL
-from
-  sites
-join
-  chemdata on chemdata.sta_seq = sites.sta_seq
-left join
-  mdl on chemdata.chemparameter = mdl.chemparameter
-where
-  chemdata.station_type='River/Stream'
-;"
-
-table_sumOfParts_base <- dbGetQuery(conn=db, SQL)
-#take only first six digits of lab_accession
-table_sumOfParts_base$lab_accession <- substr(table_sumOfParts_base$lab_accession, 1, 6)
-
 #retrieve chemical quality assurance table
 SQL <- "select *
 from chemQA"
@@ -101,7 +79,13 @@ FROM mdl;"
 
 table_mdl <- dbGetQuery(conn=db, SQL)
 
+#retrieve basin table
+SQL <- "SELECT *
+FROM basin;"
 
+table_basin_base <- dbGetQuery(conn=db, SQL)
+
+#pair up duplicate values (it was simpler to perform the join in SQL)
 SQL <- "
 select distinct
   c.lab_accession,
@@ -134,37 +118,27 @@ table_pairs_base <- dbGetQuery(conn=db, SQL)
 #take only first six digits of lab_accession
 table_pairs_base$lab_accession <- substr(table_pairs_base$lab_accession, 1, 6)
 
-#query to get only records with an MDL
-SQL<- "select
-  chemdata.lab_accession,
-  chemdata.sta_seq,
-  chemdata.chemparameter,
-  chemdata.collect_date,
-  sites.name,
-  chemdata.value,
-  mdl.MDL
-from
-  chemdata
-left join
-  mdl on chemdata.chemparameter = mdl.chemparameter
-left join
-  sites on chemdata.sta_seq = sites.sta_seq
-where
-  mdl.MDL NOT NULL
-;"
-
-lessThanMDL_base <- dbGetQuery(conn=db, SQL)
-#take only first six digits of lab_accession
-lessThanMDL_base$lab_accession <- substr(lessThanMDL_base$lab_accession, 1, 6)
-
 dbDisconnect(db)
+### END SQL QUERIES ###
 
+### CREATE TABLES ###
 
-#read sites table
+## create table_sumOfParts with full join on chemical parameter
+# keep only values with an associated mdl value
+table_sumOfParts_base <- merge(x=table_chem_base, y=table_mdl, by="chemparameter")
+# merge with sitebasin table
+table_sumOfParts_base <- merge(x=table_sumOfParts_base, y=sitebasin_base)
+# shorten lab accession sequence to first six digits
+table_sumOfParts_base$lab_accession <- substr(table_sumOfParts_base$lab_accession, 1, 6)
+
+## create table lessThanMDL with right outer join on chemical parameter
+# keep only values with an associated mdl value
+table_lessThanMDL_base <- merge(x=table_chem_base, y=table_mdl, by="chemparameter", all.y=TRUE)
+
+#read site information from GIS tables
 t_sites = read.csv("S:/J_Tonfa/5YrMonitoringRpt/map/sites_Joined.csv")  # read csv file 
-
 #create table of just sta_seq and ICMetric
-t_sitesGrouped = t_sites[, c('sta_seq', 'ICMetric', 'IC_Avg', 'SqMi', 'StrMi')]
+t_sites = t_sites[, c('sta_seq', 'ICMetric', 'IC_Avg', 'SqMi', 'StrMi')]
 
 
 # for each lab accession number, create a report

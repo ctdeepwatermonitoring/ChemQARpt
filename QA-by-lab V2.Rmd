@@ -10,6 +10,15 @@ output:
 ---
 
 <!--
+THANK YOU, MARY.
+
+HAVE A FANTASTIC SUMMER.
+
+BEST,
+JIMMY
+--> 
+
+<!--
 This markdown file performs a mass of QA operations and then generates a technical report.
 The report will only have flagged ids show up.
 --> 
@@ -51,18 +60,59 @@ table_chem <-  table_chem_base[table_chem_base$lab_accession %in% labIDs[z], ]
 table_milliQ <-  table_milliQ_base[table_milliQ_base$lab_accession %in% labIDs[z], ]
 table_sumOfParts <-  table_sumOfParts_base[table_sumOfParts_base$lab_accession %in% labIDs[z], ]
 table_pairs <-  table_pairs_base[table_pairs_base$lab_accession %in% labIDs[z], ]
-lessThanMDL <-  lessThanMDL_base[lessThanMDL_base$lab_accession %in% labIDs[z], ]
-
-#set sitesbasins to table_chem's station sequences
-sitebasin <- sitebasin_base[which(sitebasin_base$sta_seq == table_chem$sta_seq), ]
+table_lessThanMDL <-  table_lessThanMDL_base[table_lessThanMDL_base$lab_accession %in% labIDs[z], ]
 
 #set v_chems
 #take only chemical parameters within this lab ID
 v_chems <- c(unique(table_chem$chemparameter))
 ```
 
+# The Database
+The major tables in the database are as follows:
 
-# QA Table
+* chemdata
+* sites
+* basin
+* table_QA
+* mdl
+
+## Chemical Data Table
+The chemdata table holds the values of all the parameters.
+
+```{r chem-table, echo=FALSE}
+datatable(head(table_chem_base), rownames = FALSE, options = list)
+```
+
+* sta_seq: The station sequence number
+* lab_accession: The lab accession sequence number
+* collect_date: The date the sample was collected
+* chemparameter: The chemical parameter
+* value:
+* uom: The unit of measurement
+* station_type: The station type, this report uses only 'River/Stream' data
+* duplicate: A binary value that defines if the sample is a testing duplicate (1) or not (0)
+
+## Sites Table
+The sites table holds site information.
+
+```{r sites-table, echo=FALSE}
+datatable(head(sitebasin_base), rownames = FALSE, options = list)
+```
+
+* name: The name of the stream
+* ylat: The latitude
+* xlong: The longitude
+* sbasn: The sub-basin
+* major mbasn: The name of the major basin
+
+## Basin Table
+The basin table 
+
+```{r basin-table, echo=FALSE}
+datatable(head(table_basin_base), rownames = FALSE, options = list)
+```
+
+## QA Table
 This is a table of current values in the QA table within the database. The chemical parameters listed here are the only ones tested in sections 3.2 and 3.3.
 
 ```{r QA-Table, echo=FALSE}
@@ -76,14 +126,26 @@ milli_chem <- intersect(milli_chem, unique(table_QA$chemparameter))
 datatable(table_QA, rownames = FALSE, options = list)
 ```
 
-# Information
+* field_duplicate_precision: The field precision rate to compare duplicate values
+* lab_duplicate_precision: The lab precision rate to compare Milli-Q values
+
+## MDL Table
+The MDL values were obtained page 9 of the Quality Assurance Project Plan (QAPP) Aquatic Life Response to Cultural Eutrophication in CT Freshwater Rivers and Streams (2017 - 2020).
+
+```{r mdl-table, echo=FALSE}
+datatable(head(table_mdl), rownames = FALSE, options = list)
+```
+
+* MDL: The minimum detection limit
+
+# Script Results
 
 ## Count N/A Values
 The following is a table that contains the count of null values by chemical parameter.
 
 ```{r countNull, include=FALSE}
 #Join in R syntax to create a table with sites and chemicals
-table_basin<-merge(table_chem, sitebasin,by="sta_seq")
+table_basin<-merge(x=table_chem, y=sitebasin_base, by="sta_seq", all.x=TRUE)
 #declare and wipe data frame null clean for resuse
 df_null <- NULL
 #loop until end of amound of chemical parameters
@@ -236,9 +298,20 @@ The following is a table of values less than the minimum detection limit and are
 
 ```{r lessThanMDL, include=FALSE}
 #copy only rows where value is less than MDL
-lessThanMDL_final <- lessThanMDL[lessThanMDL$value < lessThanMDL$MDL, ]
-#delete null rows
-lessThanMDL_final <- lessThanMDL[rowSums(is.na(lessThanMDL)) == 0, ]
+lessThanMDL_final <- table_lessThanMDL[which(table_lessThanMDL$value < table_lessThanMDL$MDL), ]
+#omit null rows
+lessThanMDL_final <- na.omit(lessThanMDL_final)
+#shorten to specific fields if there is data
+if (!is.null(nrow(lessThanMDL_final)) == TRUE && nrow(lessThanMDL_final) > 0) {
+  lessThanMDL_final = lessThanMDL_final[, c(
+    'lab_accession',
+    'sta_seq',
+    'chemparameter',
+    'collect_date',
+    'value',
+    'MDL',
+    'uom')]
+}
 ```
 ```{r tables-lessThanMDL, fig.cap='Table 4. Table of values less than mdl', fig.align="center", echo=FALSE}
 datatable(lessThanMDL_final, rownames = FALSE, options = list(pageLength = 5))
@@ -246,7 +319,9 @@ datatable(lessThanMDL_final, rownames = FALSE, options = list(pageLength = 5))
 
 
 ## Total vs Sum of Parts
-The following is a table of values where the total value is compared to the sum of its parts, such as total nitrogen compared to nitrite + nitrate + ammonia. A value is considered flagged and put into this table if the sum is more than the value marked as a total.
+The following is a table of values where the total value is compared to the sum of its parts. A record is considered flagged and put into this table if the sum of the components is more than the value marked as a total. Each record is organized by sharing a station sequence ID.
+
+This script sums up the individual values of ammonia, nitrate, and nitrite to compare them to the entered value of total nitrogen. If the sum calculated by R is more than the value of total nitrogen, a flag is raised to mark the discrepancy. The script also compares the values of orthophosphate and total phosphorus, and raises another flag in the same situation. These comparisons are grouped by lab accession.
 
 ```{r sumOfParts, include=FALSE}
 #create temporary sum table
@@ -260,55 +335,70 @@ sumOfParts <- sumOfParts[sumOfParts$chemparameter == 'Ammonia' |
                 sumOfParts$chemparameter == 'Total Nitrogen' |
                 sumOfParts$chemparameter == 'Total Phosphorus', ]
 
-#create array of distinct lab_accession values
-sum_labs <- c(unique(sumOfParts$lab_accession))
+#create list of unique station sequences
+stations <- c(unique(sumOfParts$sta_seq))
 
 #reset df_total
 df_total = NULL
 
-#loop through unique labIDs
-for (n in 1:length(sum_labs)) {
+#convert null values to mdl
+sumOfParts$value[is.na(sumOfParts$value)] <- sumOfParts$MDL
+
+# loop through station sequences
+for (n in 1:length(stations)) {
+  #create temp dataframe of just this station sequence
+  temp_sum <- sumOfParts[which(sumOfParts$sta_seq == stations[n]), ]
   
-  #declare temp chem from table values only from specific lab
-  chem <- sumOfParts[sumOfParts$lab_accession == sum_labs[n], ]
-  
-  #convert null values to 0
-  chem$value[is.na(chem$value)] <- 0
-  
-  #aggregate sum by chemparameter
-  chem_agg <- aggregate(chem$value, by=list(Category=chem$chemparameter), FUN=sum)
-  
-  #assign values
-  ammonia <- chem_agg[1, 2]
-  nitrate <- chem_agg[2, 2]
-  nitrite <- chem_agg[3, 2]
-  ortho   <- chem_agg[4, 2]
-  tNitro  <- chem_agg[5, 2]
-  tPhos   <- chem_agg[6, 2]
-  
-  sumDissolved <- ammonia + nitrate + nitrite
-  
-  df_table = data.frame(
-    'LabID' = sumOfParts$lab_accession[n],
-    ammonia,
-    nitrate,
-    nitrite,
-    'Sum of Dissolved' = sumDissolved,
-    tNitro,
-    'Ortho Phosphate' = ortho,
-    'Total Phosphorus' = tPhos)
-  
-  #only keep records where sum of dissolved is more than total nitrogen
-  tempNitro <- df_table[df_table$Sum.of.Dissolved > df_table$tNitro, ]
-  #only keep records where sum of ortho phosphate is more than total phosphorus
-  tempPhos <- df_table[df_table$Ortho.Phosphate > df_table$tPhos, ]
-  
-  #add to total dataframe
-  df_total <- rbind(df_total, tempNitro)
-  df_total <- rbind(df_total, tempPhos)
-  #wipe duplicates
-  df_total <- unique(df_total)
+  #check that temp row has all needed chemical parameters
+  if ('Ammonia' %in% temp_sum$chemparameter &
+        'Nitrate' %in% temp_sum$chemparameter &
+        'Nitrite' %in% temp_sum$chemparameter &
+        'Ortho Phosphate' %in% temp_sum$chemparameter &
+        'Total Nitrogen' %in% temp_sum$chemparameter &
+        'Total Phosphorus' %in% temp_sum$chemparameter &
+        'Ammonia' %in% temp_sum$chemparameter) {
+    
+    #aggregate sum by chemparameter
+    chem_agg <- aggregate(temp_sum$value, by=list(Category=temp_sum$chemparameter), FUN=sum)
+    
+    #assign values
+    ammonia <- chem_agg[1, 2]
+    nitrate <- chem_agg[2, 2]
+    nitrite <- chem_agg[3, 2]
+    ortho   <- chem_agg[4, 2]
+    tNitro  <- chem_agg[5, 2]
+    tPhos   <- chem_agg[6, 2]
+    
+    #perform calculation
+    sumDissolved <- ammonia + nitrate + nitrite
+    
+    chem_row = data.frame(
+      'lab_accession' = temp_sum$lab_accession,
+      'sta_seq' = temp_sum$sta_seq,
+      ammonia,
+      nitrate,
+      nitrite,
+      'Sum of Dissolved' = sumDissolved,
+      tNitro,
+      'Ortho Phosphate' = ortho,
+      'Total Phosphorus' = tPhos)
+
+    #add row to total dataframe
+    df_total <- rbind(df_total, chem_row)
+  }
 }
+
+#only keep records where sum of dissolved is more than total nitrogen
+tempNitro <- df_total[which(df_total$Sum.of.Dissolved > df_table$tNitro), ]
+#only keep records where sum of ortho phosphate is more than total phosphorus
+tempPhos <- df_total[which(df_total$Ortho.Phosphate > df_table$tPhos), ]
+
+#add to total dataframe
+df_total <- rbind(df_total, tempNitro)
+df_total <- rbind(df_total, tempPhos)
+#wipe duplicates
+df_total <- unique(df_total)
+
 ```
 ```{r tables-df_sumOfParts, fig.cap='Table 5. Table of total vs sum of parts', fig.align="center", echo=FALSE}
 datatable(df_total, rownames = FALSE, options = list(pageLength = 5))
@@ -320,7 +410,9 @@ The following is a table of chemical parameter values above the 95th percentile,
 
 ```{r above95percentile, include=FALSE}
 #Join in R syntax to create a table with sites and chemicals
-table_basin <- merge(table_chem, sitebasin, by="sta_seq")
+table_basin <- merge(x=table_chem, y=sitebasin_base, by="sta_seq", all.x=TRUE)
+#also combine with mdl
+table_basin <- merge(x=table_basin, y=table_mdl, by='chemparameter', all.x=TRUE)
 
 #declare complete df
 allChem <- NULL
@@ -389,20 +481,23 @@ if (!is.null(nrow(allChem)) == TRUE && nrow(allChem) > 0) {
 datatable(allChem, rownames = FALSE, options = list(pageLength = 10))
 ```
 
+
 ## Values Above 95th Percentile by IC Group
-The following is a table of chemical parameter values above the 95th percentile, by custom impervious cover (IC) metrics.
+The following is a table of chemical parameter values above the 95th percentile, organized by custom impervious cover (IC) metrics.
 
 An important note is that this code portion relies on sites_Joined.csv.
 The sites_Joined.csv table is generated from a join between Sites_HydroID and HSI_StreamCatch inside QGIS.
 
 ```{r above95percentileIC, include=FALSE}
-#join t_chem and t_sitesGrouped by sta_seq
-total <- merge(table_chem, t_sitesGrouped, by='sta_seq')
+#join t_chem and t_sites by sta_seq
+total <- merge(table_chem, t_sites, by='sta_seq')
+#also combine with mdl
+total <- merge(total, table_mdl, by='chemparameter', all.x=TRUE)
 
 #declare complete df
 allChem <- NULL
 
-#create table of custom IC Metric
+#create table of custom IC Metric parameter values
 customIC <- data.frame(
   'low' = c(0, 2, 10),
   'high' = c(2, 10, Inf)
@@ -418,7 +513,7 @@ for (i in 1:length(v_chems)) {
   df_total <- NULL #reset df_total at runtime
   
   ##update null values to mdl
-  #df_chem$value[is.na(df_chem$value)] <- df_chem$MDL
+  df_chem$value[is.na(df_chem$value)] <- df_chem$MDL
   
   #loop through ICMetric of 1 to 3, essentially grouping
   for (n in 1:3) {
@@ -458,7 +553,7 @@ if (!is.null(nrow(allChem)) == TRUE && nrow(allChem) > 0) {
                       'value',
                       'Q95',
                       'uom',
-                     'ICMetric')]
+                      'ICMetric')]
   #omit null rows
   allChem <- na.omit(test)
 }
