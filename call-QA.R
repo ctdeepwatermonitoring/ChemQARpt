@@ -1,3 +1,6 @@
+#Set working directory
+setwd("P:/Projects/GitHub_Prj/ChemQARpt")
+
 #This script calls QA-by-lab V2.rmd
 library('knitr')
 library('markdown')
@@ -12,8 +15,14 @@ labIDs <- c('120156', '120274', '150413', '150459')
 
 # perform all SQL queries
 #open ODBC
-db_path <- 'S:/J_Tonfa/5YrMonitoringRpt/' 
+db_path <- paste0(getwd(),'/data/')
 db <- dbConnect(SQLite(), dbname=paste(db_path,"monrpt.db",sep=''));
+
+SQL<- "SELECT name FROM sqlite_master
+WHERE type='table'
+ORDER BY name;"
+
+dbGetQuery(conn=db,SQL)
 
 ##take main table of chemical values along with mdl
 # TAKE ONLY NON-DUPLICATE, RIVER/STREAM RECORDS
@@ -136,7 +145,7 @@ table_sumOfParts_base$lab_accession <- substr(table_sumOfParts_base$lab_accessio
 table_lessThanMDL_base <- merge(x=table_chem_base, y=table_mdl, by="chemparameter", all.y=TRUE)
 
 #read site information from GIS tables
-t_sites = read.csv("S:/J_Tonfa/5YrMonitoringRpt/map/sites_Joined.csv")  # read csv file 
+t_sites = read.csv(paste0(getwd(),'/data/sites_Joined.csv'))  # read csv file 
 #create table of just sta_seq and ICMetric
 t_sites = t_sites[, c('sta_seq', 'ICMetric', 'IC_Avg', 'SqMi', 'StrMi')]
 
@@ -146,8 +155,8 @@ t_sites = t_sites[, c('sta_seq', 'ICMetric', 'IC_Avg', 'SqMi', 'StrMi')]
 for (z in (1:length(labIDs))) {
   lab_sequence <- labIDs[z]
   
-  rmarkdown::render('S:/J_Tonfa/AssessmentQATools/QA Tools Technical Report/QA-by-lab V2.Rmd',
+  rmarkdown::render(paste0(getwd(),'/QA-by-lab V2.Rmd'),
                     output_file = paste("QAreport_", labIDs[z], "_", Sys.Date(), ".html", sep=''),
-                    output_dir = 'S:/J_Tonfa/AssessmentQATools/QA Tools Technical Report/reports')
+                    output_dir = paste0(getwd(),'/reports'))
 }
 

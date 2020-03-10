@@ -61,6 +61,7 @@ table_milliQ <-  table_milliQ_base[table_milliQ_base$lab_accession %in% labIDs[z
 table_sumOfParts <-  table_sumOfParts_base[table_sumOfParts_base$lab_accession %in% labIDs[z], ]
 table_pairs <-  table_pairs_base[table_pairs_base$lab_accession %in% labIDs[z], ]
 table_lessThanMDL <-  table_lessThanMDL_base[table_lessThanMDL_base$lab_accession %in% labIDs[z], ]
+sites<-unique(table_chem$sta_seq)
 
 #set v_chems
 #take only chemical parameters within this lab ID
@@ -96,7 +97,8 @@ datatable(head(table_chem_base), rownames = FALSE, options = list)
 The sites table holds site information.
 
 ```{r sites-table, echo=FALSE}
-datatable(head(sitebasin_base), rownames = FALSE, options = list)
+sitebasin_base_LabID<-sitebasin_base[sitebasin_base$sta_seq %in% sites,]
+datatable(sitebasin_base_LabID, rownames = FALSE, options = list)
 ```
 
 * name: The name of the stream
@@ -109,7 +111,7 @@ datatable(head(sitebasin_base), rownames = FALSE, options = list)
 The basin table 
 
 ```{r basin-table, echo=FALSE}
-datatable(head(table_basin_base), rownames = FALSE, options = list)
+datatable(table_basin_base[table_basin_base$sbasn %in% unique(sitebasin_base_LabID$sbasn),], rownames = FALSE, options = list)
 ```
 
 ## QA Table
@@ -389,9 +391,9 @@ for (n in 1:length(stations)) {
 }
 
 #only keep records where sum of dissolved is more than total nitrogen
-tempNitro <- df_total[which(df_total$Sum.of.Dissolved > df_table$tNitro), ]
+tempNitro <- df_total[which(df_total$Sum.of.Dissolved > df_total$tNitro), ]
 #only keep records where sum of ortho phosphate is more than total phosphorus
-tempPhos <- df_total[which(df_total$Ortho.Phosphate > df_table$tPhos), ]
+tempPhos <- df_total[which(df_total$Ortho.Phosphate > df_total$tPhos), ]
 
 #add to total dataframe
 df_total <- rbind(df_total, tempNitro)
